@@ -223,8 +223,6 @@ cat >"$SB_CONFIG" <<EOF
       "server":      "${FOREIGN_HOST}",
       "server_port": ${FOREIGN_PORT},
       "uuid":        "${FOREIGN_UUID}",
-      "flow":        "xtls-rprx-vision",
-      "packet_encoding": "xudp",
       "tls": {
         "enabled": true,
         "server_name": "${FOREIGN_SNI}",

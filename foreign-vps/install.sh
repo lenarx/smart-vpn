@@ -93,7 +93,7 @@ cat >"$CONFIG_PATH" <<EOF
       "listen": "::",
       "listen_port": ${LISTEN_PORT},
       "users": [
-        { "uuid": "${UUID}", "flow": "xtls-rprx-vision" }
+        { "uuid": "${UUID}" }
       ],
       "tls": {
         "enabled": true,
