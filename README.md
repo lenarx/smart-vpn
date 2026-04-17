@@ -42,9 +42,9 @@ Why this shape:
 
 ```bash
 ssh root@FOREIGN_VPS
-git clone <this-repo> /opt/smart-vpn && cd /opt/smart-vpn
-sudo ./foreign-vps/install.sh
-# optional: --sni addons.mozilla.org --port 8443
+curl -fsSL https://raw.githubusercontent.com/lenarx/smart-vpn/main/install-foreign.sh | sudo bash
+# optional args after '-s --':
+# curl ... | sudo bash -s -- --sni addons.mozilla.org --port 8443
 ```
 
 Writes `/root/smart-vpn/foreign.env` with the Reality credentials the RU VPS
@@ -56,18 +56,25 @@ Copy the env file from the foreign VPS, then run the installer:
 
 ```bash
 ssh root@RU_VPS
-git clone <this-repo> /opt/smart-vpn && cd /opt/smart-vpn
-# destination dir doesn't exist yet (install.sh creates it), so make it first:
 mkdir -p /root/smart-vpn
 scp root@FOREIGN_VPS:/root/smart-vpn/foreign.env /root/smart-vpn/foreign.env
-sudo ./ru-vps/install.sh --foreign-env /root/smart-vpn/foreign.env
-# default is AmneziaWG. For plain WireGuard (no obfuscation):
-# sudo ./ru-vps/install.sh --foreign-env /root/smart-vpn/foreign.env --protocol wireguard
+curl -fsSL https://raw.githubusercontent.com/lenarx/smart-vpn/main/install-ru.sh | \
+  sudo bash -s -- --foreign-env /root/smart-vpn/foreign.env
+# default is AmneziaWG. For plain WireGuard (no obfuscation), add:
+#   --protocol wireguard
 ```
+
+The bootstrap scripts clone (or update) this repo at `/opt/smart-vpn` and
+then invoke the real provisioning script, forwarding all extra arguments.
+Re-run the same command later to pull fresh config changes.
 
 ### 3. Add clients
 
+After the RU VPS is up, client profiles are generated via the checked-out
+repo at `/opt/smart-vpn`:
+
 ```bash
+cd /opt/smart-vpn
 sudo ./ru-vps/add-client.sh my-keenetic
 sudo ./ru-vps/add-client.sh iphone
 sudo ./ru-vps/add-client.sh laptop
@@ -75,7 +82,7 @@ sudo ./ru-vps/add-client.sh laptop
 
 Each run prints a QR code and writes the profile to
 `/root/smart-vpn/clients/<name>.conf`. Import target depends on the protocol
-picked at `install.sh` time.
+picked at install time.
 
 **If you chose AmneziaWG (default):**
 
