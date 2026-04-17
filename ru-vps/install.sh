@@ -289,12 +289,18 @@ if [[ -f /etc/systemd/system/smart-vpn-nft.service ]]; then
 fi
 
 # --- firewall ---------------------------------------------------------------
-log "configuring ufw (allow SSH + ${WG_PORT}/udp, permit forwarding)"
+log "configuring ufw (allow SSH + ${WG_PORT}/udp; open awg0; permit forwarding)"
 ufw --force reset >/dev/null
 ufw default deny incoming >/dev/null
 ufw default allow outgoing >/dev/null
 ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null
 ufw allow "${WG_PORT}/udp" >/dev/null
+# Allow everything arriving on the WG interface to reach local sockets.
+# sing-box auto_redirect REDIRECTs forwarded TCP to an ephemeral local port
+# (chosen at startup, e.g. 41379). Without this rule, ufw's default-deny
+# INPUT policy silently drops those SYNs and clients time out on every
+# connection attempt while DNS still appears to work.
+ufw allow in on "${WG_IF}" to any >/dev/null
 sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
 ufw --force enable >/dev/null
 ufw reload >/dev/null
