@@ -130,4 +130,6 @@ if [[ "$VPN_PROTO" == "amneziawg" ]]; then
 fi
 echo >&2
 echo "--- QR (scan from the target app) ---" >&2
-qrencode -t ANSIUTF8 <"$CLIENT_CONF" >&2
+# UTF8 = half-block renderer: roughly 1/4 the terminal area of ANSIUTF8,
+# still big enough for a phone camera to scan at arm's length.
+qrencode -t UTF8 <"$CLIENT_CONF" >&2
