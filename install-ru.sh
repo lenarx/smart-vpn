@@ -19,6 +19,15 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
+# Some minimal Debian cloud images (observed on Aeza, ITGLOBAL) ship with
+# broken /etc/resolv.conf — apt-get update fails with "Temporary failure
+# resolving deb.debian.org". Quick self-heal: if the Debian mirror doesn't
+# resolve, point resolv.conf at public DNS.
+if ! getent hosts deb.debian.org >/dev/null 2>&1; then
+  echo "[*] DNS broken, installing public resolvers in /etc/resolv.conf"
+  printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >/etc/resolv.conf
+fi
+
 if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
   echo "[*] installing git + curl"
   apt-get update -qq
