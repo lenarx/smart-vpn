@@ -1,0 +1,10 @@
+*.env
+!*.env.example
+out/
+secrets/
+*.key
+*.pem
+*.conf
+*.png
+clients/
+!ru-vps/add-client.sh
