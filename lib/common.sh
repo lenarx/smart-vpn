@@ -69,16 +69,83 @@ install_wireguard() {
   apt_install wireguard wireguard-tools
 }
 
+# Make sure linux-headers matching the RUNNING kernel are installed. On minimal
+# cloud images Debian often has a much newer kernel shipped in linux-image-amd64
+# than the one the VPS is actually booted into, so `apt install
+# linux-headers-$(uname -r)` will fail with "Unable to locate package" even
+# though `apt update` just ran. In that case we upgrade the kernel meta-package
+# (which pulls the new one plus matching headers) and ask the user to reboot —
+# re-running the installer on the fresh kernel then proceeds cleanly.
+ensure_kernel_headers() {
+  local running
+  running="$(uname -r)"
+  if [[ -d "/lib/modules/${running}/build" ]]; then
+    ok "kernel headers already present for ${running}"
+    return
+  fi
+  log "installing linux-headers-${running}"
+  if apt_install "linux-headers-${running}"; then
+    [[ -d "/lib/modules/${running}/build" ]] && { ok "headers installed"; return; }
+  fi
+  warn "exact headers for running kernel ${running} not in repo — upgrading kernel meta-package"
+  apt_install linux-image-amd64 linux-headers-amd64
+  local latest
+  latest="$(ls /lib/modules 2>/dev/null | sort -V | tail -n1 || true)"
+  if [[ -n "$latest" && "$latest" != "$running" ]]; then
+    cat >&2 <<EOF
+
+${C_YELLOW}[!] running kernel = ${running}, newest installed = ${latest}${C_RESET}
+
+A newer kernel with matching headers has been installed but the VPS is still
+booted on the old one. amneziawg's DKMS module can only build against a
+kernel whose headers are available — the old kernel's headers are no longer
+in the Debian repos.
+
+  Reboot to activate the new kernel, then re-run this installer:
+    reboot
+    # wait ~30s, reconnect
+    cd /opt/smart-vpn && ./ru-vps/install.sh --foreign-env /root/smart-vpn/foreign.env
+EOF
+    die "reboot required to pick up kernel ${latest}"
+  fi
+  [[ -d "/lib/modules/${running}/build" ]] || \
+    die "kernel headers for ${running} still missing after install — aborting"
+  ok "kernel headers installed"
+}
+
+# Verify the amneziawg DKMS module is actually built and loadable for the
+# running kernel. Catches the case where a past run silently warned about
+# missing headers and left a broken install behind.
+ensure_amneziawg_module() {
+  if modinfo amneziawg >/dev/null 2>&1; then return; fi
+  local running
+  running="$(uname -r)"
+  warn "amneziawg kernel module not built for ${running} — rebuilding via DKMS"
+  ensure_kernel_headers
+  # DKMS version format: amneziawg/X.Y.Z — take the highest-numbered entry
+  local ver
+  ver="$(dkms status 2>/dev/null | awk -F'[,/:]' '/^amneziawg\//{gsub(/ /,"",$2); print $2}' | sort -V | tail -n1)"
+  [[ -n "$ver" ]] || die "amneziawg package is installed but DKMS has no source tree — try: apt-get install --reinstall amneziawg-dkms"
+  log "dkms install amneziawg/${ver} -k ${running}"
+  dkms install "amneziawg/${ver}" -k "${running}" 2>&1 | tail -5 || \
+    die "DKMS build failed — run 'dkms status' and inspect /var/lib/dkms/amneziawg/${ver}/build/make.log"
+  modprobe amneziawg 2>/dev/null || \
+    die "built the module but modprobe refuses to load it — check dmesg"
+  ok "amneziawg module built and loaded"
+}
+
 install_amneziawg() {
   if command -v awg >/dev/null 2>&1; then
     ok "amneziawg already installed"
+    # Still verify the kernel module is actually built and available;
+    # otherwise `awg-quick up` will fail later with "Protocol not supported".
+    ensure_amneziawg_module
     return
   fi
   log "installing AmneziaWG from Launchpad PPA (ppa:amnezia/ppa)"
   apt_install software-properties-common gnupg dirmngr ca-certificates curl
   # Kernel headers are needed so amneziawg-dkms can build its module.
-  apt_install "linux-headers-$(uname -r)" || \
-    warn "no headers for $(uname -r); DKMS build may fail — install a matching kernel then rerun"
+  ensure_kernel_headers
 
   install -d -m 0755 /etc/apt/keyrings
   # Amnezia PPA signing key fingerprint (per Launchpad API). If upstream
@@ -151,6 +218,9 @@ EOF
   apt-get update -qq
   apt_install amneziawg amneziawg-dkms amneziawg-tools
   ok "amneziawg installed: $(awg --version 2>&1 | head -n1)"
+  # dpkg post-install may claim success even if the DKMS build silently
+  # didn't happen — explicitly verify before the service start step.
+  ensure_amneziawg_module
 }
 
 # Random u32 in [min, max] using /dev/urandom (no python/openssl dep).
