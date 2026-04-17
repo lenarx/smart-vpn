@@ -8,3 +8,9 @@ secrets/
 *.png
 clients/
 !ru-vps/add-client.sh
+
+# editor / IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
