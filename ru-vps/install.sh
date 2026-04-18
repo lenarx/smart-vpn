@@ -268,6 +268,7 @@ cat >"$SB_CONFIG" <<EOF
       "auto_route": true,
       "auto_redirect": true,
       "exclude_mptcp": true,
+      "route_exclude_address_set": ["geoip-ru"],
       "strict_route": false,
       "stack": "system"
     }
