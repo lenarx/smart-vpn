@@ -34,6 +34,7 @@ WG_SERVER_IP="${WG_SERVER_IP:-10.13.13.1/24}"
 WG_V6_SUBNET="fd13:13:13::/64"
 WG_SERVER_V6="fd13:13:13::1/64"
 DIRECT_DOMAIN_SUFFIXES="${DIRECT_DOMAIN_SUFFIXES:-ozon.ru,ozone.ru,ozonusercontent.com,ozoncdn.ru,okko.tv,okko.ru}"
+DIRECT_IP_CIDRS="${DIRECT_IP_CIDRS:-76.76.2.22/32,108.157.214.0/24,17.253.39.0/24,17.57.146.0/24,5.45.121.63/32}"
 FOREIGN_ENV=""
 
 SB_CONFIG="/etc/sing-box/config.json"
@@ -53,6 +54,7 @@ Options:
   --wg-port N                  UDP port for the tunnel (default: ${WG_PORT})
   WG_SUBNET / WG_SERVER_IP     IPv4 client subnet and server address (CIDR)
   DIRECT_DOMAIN_SUFFIXES       comma-separated domain suffixes forced to direct/RU DNS
+  DIRECT_IP_CIDRS              comma-separated destination CIDRs forced to direct
   -h, --help
 EOF
 }
@@ -128,6 +130,21 @@ if [[ -n "$DIRECT_DOMAIN_SUFFIXES" ]]; then
   done
   if (( ${#DIRECT_JSON_ITEMS[@]} > 0 )); then
     DIRECT_DOMAIN_SUFFIXES_JSON="[$(IFS=,; echo "${DIRECT_JSON_ITEMS[*]}")]"
+  fi
+fi
+
+DIRECT_IP_CIDRS_JSON="[]"
+if [[ -n "$DIRECT_IP_CIDRS" ]]; then
+  IFS=',' read -r -a DIRECT_CIDR_ARRAY <<<"$DIRECT_IP_CIDRS"
+  DIRECT_CIDR_JSON_ITEMS=()
+  for cidr in "${DIRECT_CIDR_ARRAY[@]}"; do
+    cidr="${cidr## }"
+    cidr="${cidr%% }"
+    [[ -n "$cidr" ]] || continue
+    DIRECT_CIDR_JSON_ITEMS+=("\"${cidr}\"")
+  done
+  if (( ${#DIRECT_CIDR_JSON_ITEMS[@]} > 0 )); then
+    DIRECT_IP_CIDRS_JSON="[$(IFS=,; echo "${DIRECT_CIDR_JSON_ITEMS[*]}")]"
   fi
 fi
 
@@ -268,7 +285,6 @@ cat >"$SB_CONFIG" <<EOF
       "auto_route": true,
       "auto_redirect": true,
       "exclude_mptcp": true,
-      "route_exclude_address_set": ["geoip-ru"],
       "strict_route": false,
       "stack": "system"
     }
@@ -301,6 +317,7 @@ cat >"$SB_CONFIG" <<EOF
       { "action": "sniff" },
       { "protocol": "dns", "action": "hijack-dns" },
       { "domain_suffix": ${DIRECT_DOMAIN_SUFFIXES_JSON}, "outbound": "direct" },
+      { "ip_cidr": ${DIRECT_IP_CIDRS_JSON}, "outbound": "direct" },
       { "ip_is_private": true, "outbound": "direct" },
       { "rule_set": ["geoip-ru", "geosite-ru"], "outbound": "direct" }
     ],
