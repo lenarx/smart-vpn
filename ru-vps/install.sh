@@ -4,7 +4,7 @@
 #   - AmneziaWG (default) or plain WireGuard server for clients
 #   - sing-box with TUN + auto_route + auto_redirect:
 #       * sniffs destination domain of forwarded traffic
-#       * resolves DNS directly from the RU VPS (not through the foreign chain)
+#       * resolves DNS directly from RU DNS servers on the VPS
 #       * RU geoip / geosite -> direct  (traffic appears to originate from this VPS)
 #       * everything else    -> VLESS+Reality chain to the foreign VPS
 #   Side-effect: the VPS's own outbound traffic (apt/git/curl on the host)
@@ -33,7 +33,7 @@ WG_SUBNET="${WG_SUBNET:-10.13.13.0/24}"
 WG_SERVER_IP="${WG_SERVER_IP:-10.13.13.1/24}"
 WG_V6_SUBNET="fd13:13:13::/64"
 WG_SERVER_V6="fd13:13:13::1/64"
-DIRECT_DOMAIN_SUFFIXES="${DIRECT_DOMAIN_SUFFIXES:-ozon.ru,ozonusercontent.com,ozoncdn.ru,okko.tv,okko.ru}"
+DIRECT_DOMAIN_SUFFIXES="${DIRECT_DOMAIN_SUFFIXES:-ozon.ru,ozone.ru,ozonusercontent.com,ozoncdn.ru,okko.tv,okko.ru}"
 FOREIGN_ENV=""
 
 SB_CONFIG="/etc/sing-box/config.json"
@@ -244,13 +244,15 @@ cat >"$SB_CONFIG" <<EOF
 
   "dns": {
     "servers": [
-      { "type": "udp", "tag": "global-dns", "server": "1.1.1.1" },
-      { "type": "udp", "tag": "ru-dns",     "server": "77.88.8.8" }
+      { "type": "udp", "tag": "ru-dns",      "server": "77.88.8.8" },
+      { "type": "udp", "tag": "ru-dns-alt",  "server": "77.88.8.1" },
+      { "type": "udp", "tag": "global-dns",  "server": "1.1.1.1" }
     ],
     "rules": [
+      { "domain_suffix": ${DIRECT_DOMAIN_SUFFIXES_JSON}, "server": "ru-dns" },
       { "rule_set": ["geosite-ru"], "server": "ru-dns" }
     ],
-    "final": "global-dns",
+    "final": "ru-dns",
     "strategy": "prefer_ipv4",
     "reverse_mapping": true,
     "cache_capacity": 4096
@@ -265,6 +267,7 @@ cat >"$SB_CONFIG" <<EOF
       "mtu": 1500,
       "auto_route": true,
       "auto_redirect": true,
+      "exclude_mptcp": true,
       "strict_route": false,
       "stack": "system"
     }
@@ -292,10 +295,11 @@ cat >"$SB_CONFIG" <<EOF
   ],
 
   "route": {
-    "default_domain_resolver": { "server": "global-dns" },
+    "default_domain_resolver": { "server": "ru-dns" },
     "rules": [
       { "action": "sniff" },
       { "protocol": "dns", "action": "hijack-dns" },
+      { "domain_suffix": ${DIRECT_DOMAIN_SUFFIXES_JSON}, "outbound": "direct" },
       { "ip_is_private": true, "outbound": "direct" },
       { "rule_set": ["geoip-ru", "geosite-ru"], "outbound": "direct" }
     ],
