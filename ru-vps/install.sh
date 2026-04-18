@@ -33,6 +33,7 @@ WG_SUBNET="${WG_SUBNET:-10.13.13.0/24}"
 WG_SERVER_IP="${WG_SERVER_IP:-10.13.13.1/24}"
 WG_V6_SUBNET="fd13:13:13::/64"
 WG_SERVER_V6="fd13:13:13::1/64"
+DIRECT_DOMAIN_SUFFIXES="${DIRECT_DOMAIN_SUFFIXES:-ozon.ru,ozonusercontent.com,ozoncdn.ru,okko.tv,okko.ru}"
 FOREIGN_ENV=""
 
 SB_CONFIG="/etc/sing-box/config.json"
@@ -51,6 +52,7 @@ Options:
   --protocol amneziawg|wireguard   client-facing protocol (default: amneziawg)
   --wg-port N                  UDP port for the tunnel (default: ${WG_PORT})
   WG_SUBNET / WG_SERVER_IP     IPv4 client subnet and server address (CIDR)
+  DIRECT_DOMAIN_SUFFIXES       comma-separated domain suffixes forced to direct/RU DNS
   -h, --help
 EOF
 }
@@ -113,6 +115,21 @@ WG_SERVER_OFFSET=$(( WG_SERVER_INT - WG_NETWORK_INT ))
 NEXT_IP_DEFAULT=$(( WG_SERVER_OFFSET + 1 ))
 (( NEXT_IP_DEFAULT < (WG_BROADCAST_INT - WG_NETWORK_INT) )) || \
   die "WG_SERVER_IP leaves no allocatable client addresses inside ${WG_SUBNET}"
+
+DIRECT_DOMAIN_SUFFIXES_JSON="[]"
+if [[ -n "$DIRECT_DOMAIN_SUFFIXES" ]]; then
+  IFS=',' read -r -a DIRECT_SUFFIX_ARRAY <<<"$DIRECT_DOMAIN_SUFFIXES"
+  DIRECT_JSON_ITEMS=()
+  for suffix in "${DIRECT_SUFFIX_ARRAY[@]}"; do
+    suffix="${suffix## }"
+    suffix="${suffix%% }"
+    [[ -n "$suffix" ]] || continue
+    DIRECT_JSON_ITEMS+=("\"${suffix}\"")
+  done
+  if (( ${#DIRECT_JSON_ITEMS[@]} > 0 )); then
+    DIRECT_DOMAIN_SUFFIXES_JSON="[$(IFS=,; echo "${DIRECT_JSON_ITEMS[*]}")]"
+  fi
+fi
 
 # --- pick command names + paths per protocol --------------------------------
 if [[ "$VPN_PROTO" == "amneziawg" ]]; then
