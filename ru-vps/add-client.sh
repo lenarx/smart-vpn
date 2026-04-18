@@ -5,7 +5,7 @@
 # /root/smart-vpn/ru.env (written by ru-vps/install.sh).
 #
 # Produces:
-#   /root/smart-vpn/clients/<name>.conf  — import into WireGuard or AmneziaVPN app
+#   /root/smart-vpn/clients/<name>.conf  — import into WireGuard or AmneziaWG
 #   /root/smart-vpn/clients/<name>.png   — QR code
 
 set -euo pipefail
@@ -35,7 +35,7 @@ require_root "$@"
 [[ -f "$RU_ENV" ]] || die "$RU_ENV missing — run ru-vps/install.sh first"
 load_env_file "$RU_ENV"
 : "${VPN_PROTO:?}" "${WG_CMD:?}" "${WG_QUICK:?}" "${WG_IF:?}" "${WG_CONF:?}" \
-  "${WG_META:?}" "${WG_PORT:?}" "${WG_SUBNET:?}" "${WG_SERVER_PUB:?}"
+  "${WG_META:?}" "${WG_PORT:?}" "${WG_SUBNET:?}" "${WG_V6_SUBNET:?}" "${WG_SERVER_PUB:?}"
 
 [[ -f "$WG_CONF" ]] || die "$WG_CONF not found — server config missing"
 
@@ -49,9 +49,19 @@ CLIENT_CONF="$OUT_DIR/${CLIENT}.conf"
 : "${next_ip:?next_ip missing from $WG_META}"
 NETWORK="${WG_SUBNET%/*}"
 PREFIX="${WG_SUBNET#*/}"
-BASE3="${NETWORK%.*}"
-CLIENT_IP="${BASE3}.${next_ip}"
-[[ "$next_ip" -lt 255 ]] || die "WG subnet exhausted (next_ip=$next_ip)"
+NETWORK_INT="$(ipv4_network_int "$NETWORK" "$PREFIX")" || die "invalid WG_SUBNET in $RU_ENV: $WG_SUBNET"
+BROADCAST_INT="$(ipv4_broadcast_int "$NETWORK" "$PREFIX")" || die "invalid WG_SUBNET in $RU_ENV: $WG_SUBNET"
+HOST_INT=$(( NETWORK_INT + next_ip ))
+(( HOST_INT > NETWORK_INT && HOST_INT < BROADCAST_INT )) || \
+  die "WG subnet exhausted (next_ip=$next_ip in $WG_SUBNET)"
+CLIENT_IP="$(int_to_ipv4 "$HOST_INT")" || die "failed to convert allocated IPv4 address"
+
+V6_NETWORK="${WG_V6_SUBNET%/*}"
+V6_PREFIX="${WG_V6_SUBNET#*/}"
+[[ "$V6_PREFIX" == "64" && "$V6_NETWORK" == *"::" ]] || \
+  die "WG_V6_SUBNET must stay a /64 prefix ending with :: (got ${WG_V6_SUBNET})"
+V6_BASE="${V6_NETWORK%::}"
+CLIENT_V6="${V6_BASE}::$(printf '%x' "$next_ip")"
 
 # --- keys --------------------------------------------------------------------
 umask 077
@@ -62,27 +72,51 @@ PUBLIC_IP="$(public_ipv4)"
 
 # --- append peer + hot-reload -----------------------------------------------
 log "registering peer '${CLIENT}' (${CLIENT_IP}/32) on ${WG_IF} (${VPN_PROTO})"
-cat >>"$WG_CONF" <<EOF
+PEER_BLOCK="$(cat <<EOF
 
 [Peer]
 # ${CLIENT}
 PublicKey    = ${CLIENT_PUB}
 PresharedKey = ${CLIENT_PSK}
-AllowedIPs   = ${CLIENT_IP}/32
+AllowedIPs   = ${CLIENT_IP}/32, ${CLIENT_V6}/128
 EOF
+)"
+
+SERVER_BACKUP="$(mktemp)"
+TMP_SERVER_CONF="$(mktemp)"
+cleanup() {
+  rm -f "${SERVER_BACKUP:-}" "${TMP_SERVER_CONF:-}" "${TMP_META:-}" "${TMP_CLIENT_CONF:-}"
+}
+trap cleanup EXIT
+
+cp "$WG_CONF" "$SERVER_BACKUP"
+{
+  cat "$SERVER_BACKUP"
+  printf '%s\n' "$PEER_BLOCK"
+} >"$TMP_SERVER_CONF"
+chmod 0600 "$TMP_SERVER_CONF"
+cp "$TMP_SERVER_CONF" "$WG_CONF"
 
 # syncconf applies peer changes without dropping established sessions.
-"$WG_CMD" syncconf "$WG_IF" <("$WG_QUICK" strip "$WG_IF")
+if ! "$WG_CMD" syncconf "$WG_IF" <("$WG_QUICK" strip "$WG_IF"); then
+  cp "$SERVER_BACKUP" "$WG_CONF"
+  "$WG_CMD" syncconf "$WG_IF" <("$WG_QUICK" strip "$WG_IF") || true
+  die "failed to reload ${WG_IF}; restored previous server config"
+fi
 
-sed -i "s/^next_ip=.*/next_ip=$((next_ip + 1))/" "$WG_META"
+TMP_META="$(mktemp)"
+sed "s/^next_ip=.*/next_ip=$((next_ip + 1))/" "$WG_META" >"$TMP_META"
+chmod 0600 "$TMP_META"
+mv "$TMP_META" "$WG_META"
 
 # --- client config -----------------------------------------------------------
+TMP_CLIENT_CONF="$(mktemp)"
 {
   cat <<EOF
 # smart-vpn client: ${CLIENT}  (protocol: ${VPN_PROTO})
 [Interface]
 PrivateKey = ${CLIENT_PRIV}
-Address    = ${CLIENT_IP}/${PREFIX}
+Address    = ${CLIENT_IP}/${PREFIX}, ${CLIENT_V6}/128
 DNS        = ${CLIENT_DNS}
 MTU        = 1420
 EOF
@@ -105,11 +139,12 @@ EOF
 PublicKey    = ${WG_SERVER_PUB}
 PresharedKey = ${CLIENT_PSK}
 Endpoint     = ${PUBLIC_IP}:${WG_PORT}
-AllowedIPs   = 0.0.0.0/0
+AllowedIPs   = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 EOF
-} >"$CLIENT_CONF"
-chmod 0600 "$CLIENT_CONF"
+} >"$TMP_CLIENT_CONF"
+chmod 0600 "$TMP_CLIENT_CONF"
+mv "$TMP_CLIENT_CONF" "$CLIENT_CONF"
 
 QR_PATH="$OUT_DIR/${CLIENT}.png"
 qrencode -t PNG -o "$QR_PATH" <"$CLIENT_CONF"

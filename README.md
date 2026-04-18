@@ -22,7 +22,8 @@ Why this shape:
   new device → one QR code, it just works.
 - **Domain-based split lives on the RU VPS**, not on clients. sing-box picks
   the outbound using auto-updated `geoip-ru` + `geosite-ru` rule-sets from
-  SagerNet — no manual IP lists, no Keenetic tricks.
+  SagerNet, while DNS is resolved directly on the RU VPS instead of through the
+  foreign chain — no manual IP lists, no Keenetic tricks.
 - **Link to foreign VPS is the only place DPI matters**, so that's where we
   use VLESS+Reality. The RU-side WireGuard is a plain tunnel to a domestic
   IP, which Russian ISPs don't block.
@@ -82,7 +83,9 @@ sudo ./ru-vps/add-client.sh laptop
 
 Each run prints a QR code and writes the profile to
 `/root/smart-vpn/clients/<name>.conf`. Import target depends on the protocol
-picked at install time.
+picked at install time. Generated profiles tunnel both IPv4 and IPv6 through
+the RU VPS, so dual-stack clients don't leak IPv6 outside the split-routing
+scheme.
 
 **If you chose AmneziaWG (default):**
 
@@ -128,13 +131,16 @@ smart-vpn/
 - Re-running either installer is safe; existing keys and AmneziaWG
   obfuscation params are reused, only configs are rewritten.
 - `add-client.sh` hot-reloads the tunnel via `wg syncconf` / `awg syncconf`
-  so existing peers aren't interrupted.
+  so existing peers aren't interrupted. Peer updates are written with rollback
+  on reload failure.
 - `geoip-ru` and `geosite-ru` rule-sets auto-update every 72h inside
   sing-box. No cron needed.
 - Logs: `journalctl -u sing-box -f` on either VPS. Peer status:
   `wg show` or `awg show` depending on the protocol chosen.
-- If the chain to the foreign VPS breaks, clients lose non-RU connectivity
-  but RU sites keep working — a nice-to-have fault mode.
+- DNS is resolved directly from the RU VPS, so failures in the foreign chain
+  should not slow down or break most RU sites. Classification still depends on
+  the upstream `geoip-ru` / `geosite-ru` rule-sets, so edge cases may require
+  manual overrides later.
 - Switching between AmneziaWG and WireGuard later means rerunning
   `ru-vps/install.sh --protocol ...`, regenerating client profiles, and
   reimporting them — the on-the-wire formats aren't compatible.

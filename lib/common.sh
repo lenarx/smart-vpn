@@ -266,14 +266,66 @@ generate_awg_params() {
 }
 
 enable_ip_forwarding() {
-  log "enabling IPv4 forwarding"
+  log "enabling IP forwarding"
   cat >/etc/sysctl.d/99-smart-vpn.conf <<'EOF'
 net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
 net.ipv4.conf.all.src_valid_mark = 1
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
   sysctl --system >/dev/null
+}
+
+ipv4_to_int() {
+  local ip="$1"
+  local o1 o2 o3 o4
+  IFS=. read -r o1 o2 o3 o4 <<<"$ip"
+  [[ -n "${o1:-}" && -n "${o2:-}" && -n "${o3:-}" && -n "${o4:-}" ]] || return 1
+  for octet in "$o1" "$o2" "$o3" "$o4"; do
+    [[ "$octet" =~ ^[0-9]+$ ]] || return 1
+    (( octet >= 0 && octet <= 255 )) || return 1
+  done
+  echo $(( (o1 << 24) | (o2 << 16) | (o3 << 8) | o4 ))
+}
+
+int_to_ipv4() {
+  local value="$1"
+  (( value >= 0 && value <= 4294967295 )) || return 1
+  printf '%d.%d.%d.%d\n' \
+    $(( (value >> 24) & 255 )) \
+    $(( (value >> 16) & 255 )) \
+    $(( (value >> 8) & 255 )) \
+    $(( value & 255 ))
+}
+
+ipv4_mask_int() {
+  local prefix="$1"
+  [[ "$prefix" =~ ^[0-9]+$ ]] || return 1
+  (( prefix >= 0 && prefix <= 32 )) || return 1
+  if (( prefix == 0 )); then
+    echo 0
+    return
+  fi
+  echo $(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+}
+
+ipv4_network_int() {
+  local ip="$1"
+  local prefix="$2"
+  local ip_int mask
+  ip_int="$(ipv4_to_int "$ip")" || return 1
+  mask="$(ipv4_mask_int "$prefix")" || return 1
+  echo $(( ip_int & mask ))
+}
+
+ipv4_broadcast_int() {
+  local ip="$1"
+  local prefix="$2"
+  local network mask
+  network="$(ipv4_network_int "$ip" "$prefix")" || return 1
+  mask="$(ipv4_mask_int "$prefix")" || return 1
+  echo $(( network | ((~mask) & 0xFFFFFFFF) ))
 }
 
 primary_iface() {

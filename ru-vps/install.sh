@@ -4,6 +4,7 @@
 #   - AmneziaWG (default) or plain WireGuard server for clients
 #   - sing-box with TUN + auto_route + auto_redirect:
 #       * sniffs destination domain of forwarded traffic
+#       * resolves DNS directly from the RU VPS (not through the foreign chain)
 #       * RU geoip / geosite -> direct  (traffic appears to originate from this VPS)
 #       * everything else    -> VLESS+Reality chain to the foreign VPS
 #   Side-effect: the VPS's own outbound traffic (apt/git/curl on the host)
@@ -30,6 +31,8 @@ VPN_PROTO="${VPN_PROTO:-amneziawg}"
 WG_PORT="${WG_PORT:-51820}"
 WG_SUBNET="${WG_SUBNET:-10.13.13.0/24}"
 WG_SERVER_IP="${WG_SERVER_IP:-10.13.13.1/24}"
+WG_V6_SUBNET="fd13:13:13::/64"
+WG_SERVER_V6="fd13:13:13::1/64"
 FOREIGN_ENV=""
 
 SB_CONFIG="/etc/sing-box/config.json"
@@ -47,6 +50,7 @@ Options:
   --foreign-env PATH           env file produced by foreign-vps/install.sh
   --protocol amneziawg|wireguard   client-facing protocol (default: amneziawg)
   --wg-port N                  UDP port for the tunnel (default: ${WG_PORT})
+  WG_SUBNET / WG_SERVER_IP     IPv4 client subnet and server address (CIDR)
   -h, --help
 EOF
 }
@@ -79,6 +83,36 @@ fi
 : "${FOREIGN_PBK:?FOREIGN_PBK not set}"
 : "${FOREIGN_SID:?FOREIGN_SID not set}"
 : "${FOREIGN_SNI:?FOREIGN_SNI not set}"
+
+WG_NETWORK="${WG_SUBNET%/*}"
+WG_PREFIX="${WG_SUBNET#*/}"
+[[ "$WG_NETWORK" != "$WG_SUBNET" && "$WG_PREFIX" =~ ^[0-9]+$ ]] || \
+  die "WG_SUBNET must be an IPv4 CIDR like 10.13.13.0/24"
+(( WG_PREFIX >= 1 && WG_PREFIX <= 30 )) || \
+  die "WG_SUBNET prefix must be between /1 and /30"
+WG_NETWORK_INT="$(ipv4_network_int "$WG_NETWORK" "$WG_PREFIX")" || \
+  die "WG_SUBNET has an invalid IPv4 network: $WG_SUBNET"
+WG_BROADCAST_INT="$(ipv4_broadcast_int "$WG_NETWORK" "$WG_PREFIX")" || \
+  die "WG_SUBNET has an invalid IPv4 range: $WG_SUBNET"
+WG_CANONICAL_NETWORK="$(int_to_ipv4 "$WG_NETWORK_INT")" || \
+  die "failed to canonicalize WG_SUBNET"
+[[ "$WG_NETWORK" == "$WG_CANONICAL_NETWORK" ]] || \
+  die "WG_SUBNET must use the network address ${WG_CANONICAL_NETWORK}/${WG_PREFIX}"
+
+WG_SERVER_ADDR="${WG_SERVER_IP%/*}"
+WG_SERVER_PREFIX="${WG_SERVER_IP#*/}"
+[[ "$WG_SERVER_ADDR" != "$WG_SERVER_IP" && "$WG_SERVER_PREFIX" =~ ^[0-9]+$ ]] || \
+  die "WG_SERVER_IP must be an IPv4 CIDR like 10.13.13.1/${WG_PREFIX}"
+(( WG_SERVER_PREFIX == WG_PREFIX )) || \
+  die "WG_SERVER_IP prefix (${WG_SERVER_PREFIX}) must match WG_SUBNET prefix (${WG_PREFIX})"
+WG_SERVER_INT="$(ipv4_to_int "$WG_SERVER_ADDR")" || \
+  die "WG_SERVER_IP has an invalid IPv4 address: $WG_SERVER_IP"
+(( WG_SERVER_INT > WG_NETWORK_INT && WG_SERVER_INT < WG_BROADCAST_INT )) || \
+  die "WG_SERVER_IP (${WG_SERVER_ADDR}) must be inside ${WG_SUBNET} and not use network/broadcast"
+WG_SERVER_OFFSET=$(( WG_SERVER_INT - WG_NETWORK_INT ))
+NEXT_IP_DEFAULT=$(( WG_SERVER_OFFSET + 1 ))
+(( NEXT_IP_DEFAULT < (WG_BROADCAST_INT - WG_NETWORK_INT) )) || \
+  die "WG_SERVER_IP leaves no allocatable client addresses inside ${WG_SUBNET}"
 
 # --- pick command names + paths per protocol --------------------------------
 if [[ "$VPN_PROTO" == "amneziawg" ]]; then
@@ -166,7 +200,7 @@ umask 077
   cat <<EOF
 # Managed by smart-vpn. Protocol: ${VPN_PROTO}. Edit peers via ru-vps/add-client.sh.
 [Interface]
-Address    = ${WG_SERVER_IP}
+Address    = ${WG_SERVER_IP}, ${WG_SERVER_V6}
 ListenPort = ${WG_PORT}
 PrivateKey = ${WG_SERVER_PRIV}
 EOF
@@ -179,7 +213,9 @@ EOF
 } >"$WG_CONF"
 chmod 0600 "$WG_CONF"
 
-[[ -f "$WG_META" ]] || echo "next_ip=2" >"$WG_META"
+if [[ ! -f "$WG_META" ]]; then
+  printf 'next_ip=%s\n' "$NEXT_IP_DEFAULT" >"$WG_META"
+fi
 
 # --- sing-box config: TUN in, direct + VLESS chain out ----------------------
 log "writing sing-box config: $SB_CONFIG"
@@ -191,14 +227,16 @@ cat >"$SB_CONFIG" <<EOF
 
   "dns": {
     "servers": [
-      { "type": "tls", "tag": "cloudflare", "server": "1.1.1.1",  "detour": "foreign" },
+      { "type": "udp", "tag": "global-dns", "server": "1.1.1.1" },
       { "type": "udp", "tag": "ru-dns",     "server": "77.88.8.8" }
     ],
     "rules": [
       { "rule_set": ["geosite-ru"], "server": "ru-dns" }
     ],
-    "final": "cloudflare",
-    "strategy": "ipv4_only"
+    "final": "global-dns",
+    "strategy": "prefer_ipv4",
+    "reverse_mapping": true,
+    "cache_capacity": 4096
   },
 
   "inbounds": [
@@ -206,7 +244,7 @@ cat >"$SB_CONFIG" <<EOF
       "type": "tun",
       "tag": "tun-in",
       "interface_name": "sbtun",
-      "address": ["172.19.0.1/30"],
+      "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
       "mtu": 1500,
       "auto_route": true,
       "auto_redirect": true,
@@ -237,7 +275,7 @@ cat >"$SB_CONFIG" <<EOF
   ],
 
   "route": {
-    "default_domain_resolver": { "server": "ru-dns" },
+    "default_domain_resolver": { "server": "global-dns" },
     "rules": [
       { "action": "sniff" },
       { "protocol": "dns", "action": "hijack-dns" },
@@ -334,6 +372,8 @@ RU_ENV_LINES=(
   "WG_PORT=${WG_PORT}"
   "WG_SUBNET=${WG_SUBNET}"
   "WG_SERVER_IP=${WG_SERVER_IP}"
+  "WG_V6_SUBNET=${WG_V6_SUBNET}"
+  "WG_SERVER_V6=${WG_SERVER_V6}"
   "WG_SERVER_PUB=${WG_SERVER_PUB}"
 )
 if [[ "$VPN_PROTO" == "amneziawg" ]]; then
