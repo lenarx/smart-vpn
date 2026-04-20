@@ -34,7 +34,8 @@ detect_os() {
   esac
   OS_ID="$ID"
   OS_VERSION_ID="${VERSION_ID:-}"
-  export OS_ID OS_VERSION_ID
+  OS_CODENAME="${VERSION_CODENAME:-}"
+  export OS_ID OS_VERSION_ID OS_CODENAME
 }
 
 apt_install() {
@@ -111,7 +112,21 @@ install_keenpbr() {
       --branch "$ref" https://github.com/maksimkurb/keen-pbr.git "$src"
   fi
 
-  log "building keen-pbr .deb — first run takes ~3-5 min (bun bootstrap + frontend + C++ compile)"
+  # Pre-install bun so keen-pbr's ensure_bun() in build-frontend.sh takes the
+  # short-circuit path at /root/.bun/bin/bun and never pipes the bun installer
+  # into /bin/sh. Upstream pipes `curl | sh`, but on Debian /bin/sh is dash
+  # which barfs on the bun installer's `set -o pipefail`. Using bash for our
+  # bootstrap here avoids the whole mess.
+  if ! [[ -x /root/.bun/bin/bun ]]; then
+    log "bootstrapping bun into /root/.bun (via bash — not dash)"
+    export BUN_INSTALL=/root/.bun
+    curl -fsSL https://bun.sh/install | bash >/dev/null
+    [[ -x /root/.bun/bin/bun ]] || die "bun bootstrap failed — no binary at /root/.bun/bin/bun"
+  fi
+  export BUN_INSTALL=/root/.bun
+  export PATH="$BUN_INSTALL/bin:$PATH"
+
+  log "building keen-pbr .deb — first run takes ~3-5 min (frontend + C++ compile)"
   install -d "$out"
   # build-debian-packages.sh runs ensure-frontend-dist.sh which calls
   # build-frontend.sh which auto-bootstraps bun into /root/.bun if missing.
@@ -275,11 +290,23 @@ EOF
   fi
   chmod a+r "$keyring"
 
-  # PPA is built for Ubuntu jammy; the resulting packages install cleanly on
-  # Debian 12 since the kernel module is DKMS-built and the userland tool has
-  # no exotic deps.
-  cat >/etc/apt/sources.list.d/amnezia.list <<'EOF'
-deb [signed-by=/etc/apt/keyrings/amnezia.gpg] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu jammy main
+  # Pick the PPA dist that matches the host:
+  #   - Ubuntu: use its own codename (jammy/noble/…) — matches libc6 ABI exactly.
+  #   - Debian or anything else: fall back to jammy (the module is DKMS-built
+  #     and userland has no exotic deps, so the older target installs cleanly).
+  #
+  # Available dists (probe with `curl https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu/dists/<name>/Release`):
+  # focal, jammy, noble. Update the whitelist when upstream publishes more.
+  local ppa_dist="jammy"
+  if [[ "${OS_ID:-}" == "ubuntu" ]]; then
+    case "${OS_CODENAME:-}" in
+      focal|jammy|noble) ppa_dist="$OS_CODENAME" ;;
+      *) warn "unknown Ubuntu codename '${OS_CODENAME:-?}', falling back to jammy PPA" ;;
+    esac
+  fi
+  log "using amnezia PPA dist: $ppa_dist"
+  cat >/etc/apt/sources.list.d/amnezia.list <<EOF
+deb [signed-by=/etc/apt/keyrings/amnezia.gpg] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu ${ppa_dist} main
 EOF
   apt-get update -qq
   apt_install amneziawg amneziawg-dkms amneziawg-tools

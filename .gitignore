@@ -8,6 +8,7 @@ secrets/
 *.png
 clients/
 !ru-vps/add-client.sh
+.claude
 
 # editor / IDE
 .idea/
