@@ -85,13 +85,19 @@ ${C_YELLOW}=== Manual steps (do these yourself) ===${C_RESET}
 2. In AmneziaVPN app, deploy an AmneziaWG server on the foreign VPS.
 
 3. In AmneziaVPN app, create a client profile for the foreign server and
-   place its .conf on this VPS, e.g.:
-     /etc/amnezia/amneziawg/foreign.conf
+   copy its .conf to this VPS (any path, e.g. /tmp/foreign-client.conf).
 
-4. Bring it up:
+4. Import it through the sanitizing helper — DO NOT just drop it under
+   /etc/amnezia/amneziawg/ and awg-quick it: AmneziaVPN generates configs
+   with AllowedIPs = 0.0.0.0/0, which under plain awg-quick hijacks the
+   default route and kills SSH. The helper injects Table = off so
+   awg-quick only creates the interface; keen-pbr owns the routing.
+
+     cd ${SCRIPT_DIR%/*}
+     sudo ./ru-vps/import-awg-conf.sh /tmp/foreign-client.conf foreign
      systemctl enable --now awg-quick@foreign
      awg show foreign              # expect 'latest handshake: <a few seconds ago>'
-     ip -brief addr show foreign   # expect an address inside the foreign subnet
+     ip -brief addr show foreign   # expect the address from the .conf
 
 5. Craft /etc/keen-pbr/config.json. The shipped default at
    /etc/keen-pbr/config.json already parses; you likely want:

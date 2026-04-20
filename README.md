@@ -68,19 +68,32 @@ source (~3–5 min first time), and leaves everything stopped/unconfigured.
 
 ### 3. Wire the RU VPS → foreign VPS tunnel
 
-Copy the foreign-client `.conf` generated in step 1 onto the RU VPS:
+Copy the foreign-client `.conf` generated in step 1 onto the RU VPS and
+import it through the `import-awg-conf.sh` helper. **Do not** drop the
+file into `/etc/amnezia/amneziawg/` and `awg-quick up` it verbatim — the
+AmneziaVPN-generated profile has `AllowedIPs = 0.0.0.0/0, ::/0` which,
+under plain `awg-quick`, hijacks the host's default route and kills SSH
+instantly.
 
 ```bash
-scp foreign-client.conf root@RU_VPS:/etc/amnezia/amneziawg/foreign.conf
+scp foreign-client.conf root@RU_VPS:/tmp/
 ssh root@RU_VPS
-chmod 0600 /etc/amnezia/amneziawg/foreign.conf
-systemctl enable --now awg-quick@foreign
+cd /opt/smart-vpn
+sudo ./ru-vps/import-awg-conf.sh /tmp/foreign-client.conf foreign
+sudo systemctl enable --now awg-quick@foreign
 awg show foreign                  # 'latest handshake: <a few seconds ago>'
-ip -brief addr show foreign       # interface up with the foreign subnet IP
+ip -brief addr show foreign       # interface up with the subnet IP from .conf
 ```
 
-The interface name comes from the filename — `foreign.conf` → iface
-`foreign`. Pick any name you like.
+What `import-awg-conf.sh` does before writing the file:
+
+- Injects `Table = off` in `[Interface]` so `awg-quick` brings up the
+  interface without touching the routing table (keen-pbr will steer
+  matched flows into it via its own policy-routing table).
+- Strips `DNS = ...` lines — the host is a gateway, not a client; no need
+  to hijack `/etc/resolv.conf`.
+- Strips empty `I2..I5 = ` / `S3..S4 = ` lines that current
+  `amneziawg-tools` rejects with `Line unrecognized`.
 
 ### 4. Configure keen-pbr
 
@@ -112,9 +125,11 @@ Web UI at `http://<your-bound-address>:12121/`.
 ```
 smart-vpn/
 ├── README.md
-├── install-ru.sh           one-liner bootstrap (clones repo, invokes ru-vps/install.sh)
-├── lib/common.sh           shared bash helpers
-└── ru-vps/install.sh       installs amneziawg-tools + keen-pbr; no configs, no services
+├── install-ru.sh              one-liner bootstrap (clones repo, invokes ru-vps/install.sh)
+├── lib/common.sh              shared bash helpers
+└── ru-vps/
+    ├── install.sh             installs amneziawg-tools + keen-pbr; no configs, no services
+    └── import-awg-conf.sh     sanitize + install an AmneziaVPN-generated .conf under /etc/amnezia/amneziawg/
 ```
 
 ## Operational notes
