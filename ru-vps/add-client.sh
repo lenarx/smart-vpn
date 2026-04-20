@@ -17,10 +17,10 @@ STATE_DIR="/root/smart-vpn"
 OUT_DIR="$STATE_DIR/clients"
 RU_ENV="$STATE_DIR/ru.env"
 
-[[ $# -ge 1 ]] || die "usage: sudo $0 <client-name> [--dns 1.1.1.1]"
+[[ $# -ge 1 ]] || die "usage: sudo $0 <client-name> [--dns 10.13.13.1]"
 
 CLIENT="$1"; shift || true
-CLIENT_DNS="1.1.1.1, 8.8.8.8"
+CLIENT_DNS=""  # filled from $WG_SERVER_ADDR after env is loaded, unless --dns overrides
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -36,6 +36,15 @@ require_root "$@"
 load_env_file "$RU_ENV"
 : "${VPN_PROTO:?}" "${WG_CMD:?}" "${WG_QUICK:?}" "${WG_IF:?}" "${WG_CONF:?}" \
   "${WG_META:?}" "${WG_PORT:?}" "${WG_SUBNET:?}" "${WG_V6_SUBNET:?}" "${WG_SERVER_PUB:?}"
+
+# Default DNS = server AWG IP (dnsmasq on the VPS, which keen-pbr uses to
+# populate domain->ipset mappings for split routing). Clients whose DNS goes
+# anywhere else (Keenetic LAN dnsmasq, iPhone iCloud Private Relay) fall back
+# to pure IP-based matching via keen-pbr's ru_cidrs list — still works, just
+# less precise than domain-based matches.
+if [[ -z "$CLIENT_DNS" ]]; then
+  CLIENT_DNS="${WG_SERVER_ADDR:-${WG_SERVER_IP%/*}}"
+fi
 
 [[ -f "$WG_CONF" ]] || die "$WG_CONF not found — server config missing"
 

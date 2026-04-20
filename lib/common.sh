@@ -69,6 +69,72 @@ install_wireguard() {
   apt_install wireguard wireguard-tools
 }
 
+# Build keen-pbr (full variant, with Web UI) from source and install the .deb.
+# Upstream has not yet published apt-repo packages — workflow that should do
+# it triggers on a mistyped tag pattern and has never run — but main branch
+# contains a functional Debian packaging tree. We replicate upstream's
+# build_scripts/build-debian-packages.sh which already handles bun bootstrap,
+# frontend build, and dpkg-buildpackage in one call.
+#
+# Env overrides:
+#   KEENPBR_REF         git ref to build (default: main)
+#   KEENPBR_BUILD_DIR   where to clone (default: /opt/smart-vpn/build/keen-pbr)
+install_keenpbr() {
+  if command -v keen-pbr >/dev/null 2>&1; then
+    ok "keen-pbr already installed: $(keen-pbr --version 2>&1 | head -n1)"
+    return
+  fi
+
+  local ref="${KEENPBR_REF:-main}"
+  local src="${KEENPBR_BUILD_DIR:-/opt/smart-vpn/build/keen-pbr}"
+  local out="${src}.out"
+  local arch
+  arch="$(dpkg --print-architecture)"
+
+  log "installing keen-pbr build-deps (Ubuntu 24.04 builder image deps minus apt-utils)"
+  apt_install \
+    build-essential ca-certificates cmake curl debhelper dpkg-dev file g++ git \
+    gnupg libcurl4-openssl-dev libfmt-dev libnl-3-dev libnl-route-3-dev \
+    libunwind-dev ninja-build nlohmann-json3-dev pkg-config rsync unzip \
+    xz-utils zstd
+
+  if [[ -d "$src/.git" ]]; then
+    log "updating existing keen-pbr clone at $src"
+    git -C "$src" fetch --depth 1 origin "$ref"
+    git -C "$src" checkout --detach FETCH_HEAD
+    git -C "$src" submodule update --init --recursive --depth 1
+  else
+    log "cloning keen-pbr ($ref) into $src"
+    rm -rf "$src"
+    install -d "$(dirname "$src")"
+    git clone --depth 1 --recurse-submodules --shallow-submodules \
+      --branch "$ref" https://github.com/maksimkurb/keen-pbr.git "$src"
+  fi
+
+  log "building keen-pbr .deb — first run takes ~3-5 min (bun bootstrap + frontend + C++ compile)"
+  install -d "$out"
+  # build-debian-packages.sh runs ensure-frontend-dist.sh which calls
+  # build-frontend.sh which auto-bootstraps bun into /root/.bun if missing.
+  bash "$src/build_scripts/build-debian-packages.sh" "$src" "$out"
+
+  # collect-debian.sh normalizes filenames into debian/<codename>/<arch>/...
+  local deb
+  deb="$(find "$out/debian" -type f -name "keen-pbr_*_${arch}.deb" \
+         ! -name 'keen-pbr-headless*' ! -name '*dbgsym*' | head -n1)"
+  [[ -f "$deb" ]] || die "keen-pbr .deb not produced (looked in $out/debian)"
+
+  log "installing $(basename "$deb") via apt (pulls runtime deps incl. dnsmasq)"
+  # apt-get install on a local path auto-resolves Depends: dnsmasq + libs.
+  # KEEN_PBR_REPLACE_DNSMASQ_DEFAULTS=Y makes postinst overwrite /etc/dnsmasq.conf
+  # with the upstream template (contains the conf-dir=/tmp/dnsmasq.d block keen-pbr
+  # requires). DEBIAN_FRONTEND=noninteractive alone already picks Y, but we pin
+  # it explicitly to make the intent obvious.
+  DEBIAN_FRONTEND=noninteractive \
+    KEEN_PBR_REPLACE_DNSMASQ_DEFAULTS=Y \
+    apt-get install -y --no-install-recommends "$deb"
+  ok "keen-pbr installed: $(keen-pbr --version 2>&1 | head -n1)"
+}
+
 # Make sure linux-headers matching the RUNNING kernel are installed. On minimal
 # cloud images Debian often has a much newer kernel shipped in linux-image-amd64
 # than the one the VPS is actually booted into, so `apt install

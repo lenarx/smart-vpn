@@ -1,7 +1,7 @@
 # smart-vpn
 
 Two-tier VPN where clients see one WireGuard tunnel to a Russian VPS, and the
-RU VPS transparently splits traffic by destination: Russian domains go out
+RU VPS transparently splits traffic by destination: Russian sites/IPs go out
 directly (so `gosuslugi.ru`, banks, etc. still work), everything else is
 chained through a foreign VPS via VLESS+Reality.
 
@@ -9,24 +9,38 @@ chained through a foreign VPS via VLESS+Reality.
 clients (Keenetic / iOS / Android / laptop)
   │  AmneziaWG (default, DPI-obfuscated) — or plain WireGuard with --protocol wireguard
   ▼
-RU VPS  ─── direct ────▶  *.ru, *.su, Russia geoip       (real client-facing IP = RU VPS)
-  │
-  │  VLESS + Reality  (DPI-resistant; masquerades as TLS to the configured SNI)
-  ▼
-Foreign VPS ──────────▶  blocked sites (YouTube, Meta, etc.)
+RU VPS ─┬─ direct ────▶  RU sites + RU IP ranges    (real client-facing IP = RU VPS)
+        │    (ens3, MASQUERADE)
+        │
+        └─ sbtun ▶ sing-box ▶ VLESS+Reality ▶ Foreign VPS ▶ blocked sites
 ```
+
+Components on the RU VPS:
+
+- **AmneziaWG/WireGuard server** — terminates the client tunnel on `awg0`.
+- **sing-box** — minimal VLESS+Reality client. Creates TUN device `sbtun`
+  with `auto_route=false` (it owns the device; keen-pbr owns the routing)
+  and forwards everything that lands on `sbtun` to the foreign VPS. No
+  geosite/geoip/DNS rules in sing-box — it's a dumb transport.
+- **keen-pbr** — policy-based routing daemon. Uses dnsmasq + nftables sets
+  to classify destinations: RU domains (from the itdoginfo `outside-raw.lst`)
+  and RU IP ranges (from `ipdeny.com`) stay on the direct path; everything
+  else is fwmark'd into a dedicated routing table whose default points at
+  `sbtun`. Web UI bound only to the server's AWG-side IP, so it's reachable
+  through the tunnel and invisible from the public internet.
 
 Why this shape:
 
 - **Clients stay dumb.** One WG profile, no per-device domain lists. Add a
   new device → one QR code, it just works.
-- **Domain-based split lives on the RU VPS**, not on clients. sing-box picks
-  the outbound using auto-updated `geoip-ru` + `geosite-ru` rule-sets from
-  SagerNet, while DNS is resolved directly on the RU VPS instead of through the
-  foreign chain — no manual IP lists, no Keenetic tricks.
+- **Split lives on the RU VPS**, not on clients. keen-pbr owns it; sing-box
+  is stripped down to a pure transport.
 - **Link to foreign VPS is the only place DPI matters**, so that's where we
   use VLESS+Reality. The RU-side WireGuard is a plain tunnel to a domestic
   IP, which Russian ISPs don't block.
+- **No public management surface.** The keen-pbr Web UI listens only on
+  the server's AWG IP (`10.13.13.1:12121` by default), so the tunnel itself
+  is the auth boundary.
 
 ## Prerequisites
 
@@ -119,10 +133,10 @@ as a fallback, but QR scan into AmneziaVPN will typically fail.
 ```
 smart-vpn/
 ├── README.md
-├── lib/common.sh           shared bash helpers (logging, apt, sing-box install)
+├── lib/common.sh           shared bash helpers (logging, apt, sing-box + keen-pbr installers)
 ├── foreign-vps/install.sh  VLESS+Reality server (sing-box)
 └── ru-vps/
-    ├── install.sh          WG server + sing-box TUN + geosite/geoip routing
+    ├── install.sh          WG/AWG server + sing-box (VLESS client) + keen-pbr (split router)
     └── add-client.sh       per-client WG profile + QR
 ```
 
@@ -132,15 +146,23 @@ smart-vpn/
   obfuscation params are reused, only configs are rewritten.
 - `add-client.sh` hot-reloads the tunnel via `wg syncconf` / `awg syncconf`
   so existing peers aren't interrupted. Peer updates are written with rollback
-  on reload failure.
-- `geoip-ru` and `geosite-ru` rule-sets auto-update every 72h inside
-  sing-box. No cron needed.
-- Logs: `journalctl -u sing-box -f` on either VPS. Peer status:
-  `wg show` or `awg show` depending on the protocol chosen.
-- DNS is resolved directly from the RU VPS, so failures in the foreign chain
-  should not slow down or break most RU sites. Classification still depends on
-  the upstream `geoip-ru` / `geosite-ru` rule-sets, so edge cases may require
-  manual overrides later.
+  on reload failure. Client `DNS` defaults to the server's AWG IP so
+  keen-pbr's dnsmasq sees every query and can populate its domain→ipset maps.
+- `keen-pbr` is built from source on first install (the upstream apt repo
+  isn't publishing Debian packages yet — `release-packages.yml` triggers on
+  a mistyped tag pattern). Subsequent re-runs of the installer detect the
+  existing binary and skip the rebuild.
+- `keen-pbr` pulls its RU-domain and RU-CIDR lists on every restart from
+  `itdoginfo/allow-domains/Russia/outside-raw.lst` and
+  `ipdeny.com/ipblocks/data/aggregated/ru-aggregated.zone`. Override via
+  `RU_SITES_URL` / `RU_CIDRS_URL` env vars at install time.
+- Manual overrides (domains/CIDRs forced to direct) go in
+  `DIRECT_DOMAIN_SUFFIXES` / `DIRECT_IP_CIDRS` when running `install.sh`.
+- Logs: `journalctl -u keen-pbr -f` for routing decisions,
+  `journalctl -u sing-box -f` for the VLESS transport,
+  `journalctl -u dnsmasq -f` for DNS. Peer status: `wg show` or `awg show`.
+- Web UI: `http://<server-AWG-IP>:12121/` — reachable only through the
+  tunnel. Override port via `KEENPBR_API_PORT`.
 - Switching between AmneziaWG and WireGuard later means rerunning
   `ru-vps/install.sh --protocol ...`, regenerating client profiles, and
   reimporting them — the on-the-wire formats aren't compatible.
