@@ -148,6 +148,33 @@ install_keenpbr() {
     KEEN_PBR_REPLACE_DNSMASQ_DEFAULTS=Y \
     apt-get install -y --no-install-recommends "$deb"
   ok "keen-pbr installed: $(keen-pbr --version 2>&1 | head -n1)"
+
+  # Reconcile dnsmasq with keen-pbr's template on Ubuntu:
+  # - The dnsmasq-base package ships /etc/dnsmasq.d/ubuntu-fan which sets
+  #   `bind-interfaces`. keen-pbr's template sets `bind-dynamic`. dnsmasq
+  #   rejects both being present ("cannot set --bind-interfaces and --bind-dynamic")
+  #   and systemd start fails silently during postinst. Strip the bind-interfaces
+  #   line but keep `except-interface=fan-*` so fan networking still isn't bound.
+  # - Harden against public exposure on a typical cloud VPS by excepting public
+  #   and tunnel interfaces. ens3 is the overwhelming convention; override with
+  #   DNSMASQ_EXCEPT_IFACES if your primary NIC differs. docker0 is the standard
+  #   Docker bridge (AmneziaVPN pulls Docker in if it deploys a server here).
+  if [[ -f /etc/dnsmasq.d/ubuntu-fan ]]; then
+    sed -i '/^bind-interfaces$/d' /etc/dnsmasq.d/ubuntu-fan
+  fi
+  local except_ifaces="${DNSMASQ_EXCEPT_IFACES:-ens3 foreign docker0}"
+  {
+    printf '# Managed by smart-vpn (lib/common.sh:install_keenpbr).\n'
+    printf '# Keep dnsmasq off public and tunnel interfaces — it should only\n'
+    printf '# serve local keen-pbr self-checks plus AmneziaVPN'"'"'s client subnet.\n'
+    for iface in $except_ifaces; do
+      printf 'except-interface=%s\n' "$iface"
+    done
+  } >/etc/dnsmasq.d/smart-vpn.conf
+  chmod 0644 /etc/dnsmasq.d/smart-vpn.conf
+  if systemctl is-enabled dnsmasq >/dev/null 2>&1; then
+    systemctl restart dnsmasq || warn "dnsmasq restart failed; check journalctl -u dnsmasq"
+  fi
 }
 
 # Make sure linux-headers matching the RUNNING kernel are installed. On minimal
