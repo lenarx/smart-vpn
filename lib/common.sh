@@ -126,11 +126,15 @@ install_keenpbr() {
   export BUN_INSTALL=/root/.bun
   export PATH="$BUN_INSTALL/bin:$PATH"
 
-  log "building keen-pbr .deb — first run takes ~3-5 min (frontend + C++ compile)"
+  log "building keen-pbr .deb — first run takes ~6-10 min (frontend + C++ compile)"
   install -d "$out"
   # build-debian-packages.sh runs ensure-frontend-dist.sh which calls
   # build-frontend.sh which auto-bootstraps bun into /root/.bun if missing.
-  bash "$src/build_scripts/build-debian-packages.sh" "$src" "$out"
+  # parallel=1 + nolto: two parallel cc1plus with LTO can each exceed 1 GB
+  # and the kernel OOM-kills the build on a 2 GB VPS with no swap. Serial
+  # build without LTO stays comfortably under 1 GB.
+  DEB_BUILD_OPTIONS="parallel=1 nolto" \
+    bash "$src/build_scripts/build-debian-packages.sh" "$src" "$out"
 
   # collect-debian.sh normalizes filenames into debian/<codename>/<arch>/...
   local deb
@@ -212,7 +216,7 @@ in the Debian repos.
   Reboot to activate the new kernel, then re-run this installer:
     reboot
     # wait ~30s, reconnect
-    cd /opt/smart-vpn && ./ru-vps/install.sh --foreign-env /root/smart-vpn/foreign.env
+    cd /opt/smart-vpn && sudo ./ru-vps/install.sh
 EOF
     die "reboot required to pick up kernel ${latest}"
   fi
