@@ -1,79 +1,82 @@
 # smart-vpn
 
-Two-tier VPN: clients connect to an AmneziaWG server on a Russian VPS, and
-that server chain-routes non-RU traffic through a foreign VPS via a second
-AmneziaWG tunnel. RU traffic egresses directly from the RU VPS (so
-`gosuslugi.ru`, banks, etc. keep working from a Russian IP), everything
-else exits from the foreign VPS IP.
+Двухуровневый VPN: клиенты подключаются к серверу AmneziaWG на российском
+VPS, а тот цепной маршрутизацией пропускает не-RU трафик через зарубежный
+VPS вторым туннелем AmneziaWG. RU-трафик выходит напрямую с RU VPS (так что
+`gosuslugi.ru`, банки и т.п. продолжают работать с российского IP), всё
+остальное уходит через IP зарубежного VPS.
 
 ```
-clients (Keenetic / iOS / Android / laptop)
-  │  AmneziaWG  (managed by you via AmneziaVPN app)
+клиенты (Keenetic / iOS / Android / ноутбук)
+  │  AmneziaWG  (управляется через приложение AmneziaVPN)
   ▼
-RU VPS ─┬─ direct ────▶ RU sites + RU IPs        (real egress IP = RU VPS)
+RU VPS ─┬─ напрямую ──▶ RU-сайты и RU-IP          (внешний IP = RU VPS)
         │
-        └─ `foreign` iface ▶ AmneziaWG to foreign VPS ▶ everything else
-                                (managed by keen-pbr's policy-routing)
+        └─ интерфейс `foreign` ▶ AmneziaWG → зарубежный VPS ▶ всё остальное
+                                  (управляется policy-routing'ом keen-pbr)
 ```
 
-## Separation of concerns
+## Разделение ответственности
 
-| Piece                               | Managed by          |
-|-------------------------------------|---------------------|
-| AmneziaWG server on RU VPS          | **AmneziaVPN app**  |
-| AmneziaWG server on foreign VPS     | **AmneziaVPN app**  |
-| Client profiles for your devices    | **AmneziaVPN app**  |
-| AmneziaWG tunnel RU VPS → foreign   | **you** (drop a `.conf` under `/etc/amnezia/amneziawg/` and `awg-quick up`) |
-| `keen-pbr` install + build          | this repo's installer |
-| `awg`/`awg-quick` tooling on host   | this repo's installer |
-| Split-routing policy (lists, rules) | **you** (`/etc/keen-pbr/config.json` + Web UI) |
+| Компонент                                            | Кто управляет       |
+|------------------------------------------------------|---------------------|
+| Сервер AmneziaWG на RU VPS                           | **приложение AmneziaVPN** |
+| Сервер AmneziaWG на зарубежном VPS                   | **приложение AmneziaVPN** |
+| Клиентские профили для ваших устройств               | **приложение AmneziaVPN** |
+| Туннель AmneziaWG RU VPS → зарубежный VPS            | **вы** (положить `.conf` в `/etc/amnezia/amneziawg/` и выполнить `awg-quick up`) |
+| Установка и сборка `keen-pbr`                        | инсталлятор из этого репозитория |
+| Утилиты `awg`/`awg-quick` на хосте                   | инсталлятор из этого репозитория |
+| Политика селективной маршрутизации (списки, правила) | **вы** (`/etc/keen-pbr/config.json` + веб-интерфейс) |
 
-The installer in this repo is deliberately minimal: it installs tools and
-gets out of your way. No configs are generated, no services are started,
-no firewall rules are added. You own `/etc/amnezia/amneziawg/*.conf` and
-`/etc/keen-pbr/config.json`.
+Инсталлятор в этом репозитории намеренно минимален: он ставит инструменты и
+не лезет в остальное. Никаких конфигов не генерируется, никаких сервисов
+не запускается, никакие правила фаервола не добавляются. Файлы
+`/etc/amnezia/amneziawg/*.conf` и `/etc/keen-pbr/config.json` — ваши.
 
-## Prerequisites
+## Требования
 
-- **RU VPS**: Debian 12, public IPv4, root SSH.
-- **Foreign VPS**: anything AmneziaVPN can deploy to (Debian/Ubuntu), outside
-  Russia, ideally NL/DE/FI.
-- **AmneziaVPN app** installed on a management workstation
-  (macOS/Windows/Linux) with SSH access to both VPSes.
+- **RU VPS**: Debian 12, публичный IPv4, root по SSH.
+- **Зарубежный VPS**: что угодно, куда AmneziaVPN умеет разворачиваться
+  (Debian/Ubuntu), находящийся вне России, лучше всего NL/DE/FI.
+- **Приложение AmneziaVPN**, установленное на управляющей рабочей станции
+  (macOS/Windows/Linux), с SSH-доступом к обоим VPS.
 
-## Run order
+## Порядок установки
 
-### 1. Deploy AmneziaWG servers on both VPSes via AmneziaVPN app
+### 1. Развернуть серверы AmneziaWG на обоих VPS через приложение AmneziaVPN
 
-Install [AmneziaVPN](https://amnezia.org/) on your workstation. For each
-VPS: *Add server* → enter SSH creds → pick **AmneziaWG** protocol → deploy.
-Wait for it to finish; you'll end up with two working AmneziaWG servers.
+Установите [AmneziaVPN](https://amnezia.org/) на свою рабочую станцию. Для
+каждого VPS: *Add server* → ввести SSH-креды → выбрать протокол
+**AmneziaWG** → развернуть. Дождитесь окончания; в итоге получите два
+рабочих сервера AmneziaWG.
 
-Then generate client profiles:
-- **RU VPS server**: one profile per home device (Keenetic, iPhone, laptop).
-  Import each into the AmneziaWG client app on the respective device.
-- **Foreign VPS server**: one profile named something like `ru-vps-client`.
-  Don't import anywhere — you'll place the raw `.conf` on the RU VPS.
+Затем сгенерируйте клиентские профили:
+- **На сервере RU VPS**: по одному профилю на каждое домашнее устройство
+  (Keenetic, iPhone, ноутбук). Импортируйте каждый в клиент AmneziaWG на
+  соответствующем устройстве.
+- **На сервере зарубежного VPS**: один профиль с именем вроде `ru-vps-client`.
+  Никуда не импортируйте — сам `.conf` положите на RU VPS.
 
-### 2. Install tooling on the RU VPS
+### 2. Установить инструменты на RU VPS
 
 ```bash
 ssh root@RU_VPS
 curl -fsSL https://raw.githubusercontent.com/lenarx/smart-vpn/main/install-ru.sh | sudo bash
 ```
 
-Bootstrap clones the repo into `/opt/smart-vpn` and runs
-`ru-vps/install.sh`, which apt-gets build deps, builds `keen-pbr` from
-source (~3–5 min first time), and leaves everything stopped/unconfigured.
+Bootstrap клонирует репозиторий в `/opt/smart-vpn` и запускает
+`ru-vps/install.sh`, который ставит через apt сборочные зависимости,
+собирает `keen-pbr` из исходников (~3–5 мин при первом запуске) и
+оставляет всё в выключенном и ненастроенном состоянии.
 
-### 3. Wire the RU VPS → foreign VPS tunnel
+### 3. Поднять туннель RU VPS → зарубежный VPS
 
-Copy the foreign-client `.conf` generated in step 1 onto the RU VPS and
-import it through the `import-awg-conf.sh` helper. **Do not** drop the
-file into `/etc/amnezia/amneziawg/` and `awg-quick up` it verbatim — the
-AmneziaVPN-generated profile has `AllowedIPs = 0.0.0.0/0, ::/0` which,
-under plain `awg-quick`, hijacks the host's default route and kills SSH
-instantly.
+Скопируйте `.conf` зарубежного клиента, сгенерированный на шаге 1, на RU
+VPS и импортируйте его через helper `import-awg-conf.sh`. **Не** кладите
+файл напрямую в `/etc/amnezia/amneziawg/` и не запускайте `awg-quick up`
+поверх него — сгенерированный AmneziaVPN профиль содержит
+`AllowedIPs = 0.0.0.0/0, ::/0`, что под обычным `awg-quick` отбирает
+маршрут по умолчанию у хоста и моментально кладёт SSH.
 
 ```bash
 scp foreign-client.conf root@RU_VPS:/tmp/
@@ -85,67 +88,71 @@ awg show foreign                  # 'latest handshake: <a few seconds ago>'
 ip -brief addr show foreign       # interface up with the subnet IP from .conf
 ```
 
-What `import-awg-conf.sh` does before writing the file:
+Что `import-awg-conf.sh` делает с файлом перед записью:
 
-- Injects `Table = off` in `[Interface]` so `awg-quick` brings up the
-  interface without touching the routing table (keen-pbr will steer
-  matched flows into it via its own policy-routing table).
-- Strips `DNS = ...` lines — the host is a gateway, not a client; no need
-  to hijack `/etc/resolv.conf`.
-- Strips empty `I2..I5 = ` / `S3..S4 = ` lines that current
-  `amneziawg-tools` rejects with `Line unrecognized`.
+- Вставляет `Table = off` в секцию `[Interface]`, чтобы `awg-quick` поднял
+  интерфейс без правки таблицы маршрутизации (keen-pbr сам направит туда
+  нужные потоки через свою таблицу policy-routing).
+- Вырезает строки `DNS = ...` — этот хост является шлюзом, а не
+  клиентом; угонять `/etc/resolv.conf` ему незачем.
+- Вырезает пустые строки `I2..I5 = ` / `S3..S4 = `, которые текущий
+  `amneziawg-tools` отбрасывает с ошибкой `Line unrecognized`.
 
-### 4. Configure keen-pbr
+### 4. Настроить keen-pbr
 
-Edit `/etc/keen-pbr/config.json`. The package ships a working example at
-that path. You'll typically want:
+Отредактируйте `/etc/keen-pbr/config.json`. В пакете уже лежит рабочий
+пример по этому пути. Обычно вам потребуется:
 
-- An **`"interface"` outbound** pointing at the `foreign` iface from step 3
-  (this is what non-RU traffic goes into).
-- Lists for RU domains and RU IPs to keep on the direct path
-  (good sources: `outside-raw.lst` from itdoginfo/allow-domains for
-  domains, `ru-aggregated.zone` from ipdeny.com for CIDRs).
-- A catch-all to route everything else into the `foreign` outbound.
-- `api.listen` bound to an internal IP so the Web UI isn't publicly
-  reachable. Good choices: the AmneziaWG-server IP on this VPS (reachable
-  only through your home-client tunnel) or `127.0.0.1` (reachable only via
-  SSH tunnel).
+- Outbound типа **`"interface"`**, указывающий на интерфейс `foreign` из
+  шага 3 (туда уйдёт не-RU трафик).
+- Списки RU-доменов и RU-IP для прямого маршрута (хорошие источники:
+  `outside-raw.lst` из itdoginfo/allow-domains для доменов,
+  `ru-aggregated.zone` с ipdeny.com для CIDR-блоков).
+- Catch-all правило, отправляющее всё прочее в outbound `foreign`.
+- `api.listen`, привязанный к внутреннему IP, чтобы веб-интерфейс не был
+  публично доступен. Подходящие варианты: IP сервера AmneziaWG на этом
+  VPS (доступен только через ваш домашний клиентский туннель) либо
+  `127.0.0.1` (доступен только через SSH-туннель).
 
-Then:
+Затем:
 
 ```bash
 systemctl restart keen-pbr
 journalctl -u keen-pbr -f
 ```
 
-Web UI at `http://<your-bound-address>:12121/`.
+Веб-интерфейс на `http://<ваш-bound-адрес>:12121/`.
 
-## Layout
+## Структура репозитория
 
 ```
 smart-vpn/
 ├── README.md
-├── install-ru.sh              one-liner bootstrap (clones repo, invokes ru-vps/install.sh)
-├── lib/common.sh              shared bash helpers
+├── install-ru.sh              однострочный bootstrap (клонирует репозиторий, запускает ru-vps/install.sh)
+├── lib/common.sh              общие bash-хелперы
 └── ru-vps/
-    ├── install.sh             installs amneziawg-tools + keen-pbr; no configs, no services
-    └── import-awg-conf.sh     sanitize + install an AmneziaVPN-generated .conf under /etc/amnezia/amneziawg/
+    ├── install.sh             ставит amneziawg-tools + keen-pbr; без конфигов и сервисов
+    └── import-awg-conf.sh     обезопасить + установить AmneziaVPN-овский .conf в /etc/amnezia/amneziawg/
 ```
 
-## Operational notes
+## Эксплуатационные заметки
 
-- Re-running the installer is safe. If `keen-pbr` is already on PATH the
-  rebuild is skipped. If it's not, the build reuses the `/opt/smart-vpn/build/keen-pbr`
-  clone (`git fetch` + checkout of `KEENPBR_REF`, default `main`).
-- **Why build `keen-pbr` from source?** Upstream's Debian apt repo has
-  no published packages yet. The release workflow triggers on tag pattern
-  `v-*` but real tags are `v2.2.1`-style, so it never runs. When that's
-  fixed the installer will pick up an apt-installed binary automatically.
-- **Bun bootstrap gotcha:** upstream's `build-frontend.sh` pipes
-  `curl bun.sh/install | sh`. On Debian `/bin/sh` is `dash`, which chokes
-  on the bun installer's `set -o pipefail`. `install_keenpbr` pre-installs
-  bun with bash so upstream's `ensure_bun()` takes the short-circuit path.
-- Switching between `amneziawg` and plain `wireguard` for the RU→foreign
-  link? Just change the `.conf` in `/etc/amnezia/amneziawg/` (or
-  `/etc/wireguard/` for plain WG), bring it up, point keen-pbr's outbound
-  at the new iface. No installer rerun needed — tools for both are there.
+- Повторный запуск инсталлятора безопасен. Если `keen-pbr` уже в PATH —
+  пересборка пропускается. Если нет — сборка переиспользует существующий
+  клон в `/opt/smart-vpn/build/keen-pbr` (`git fetch` + checkout на
+  `KEENPBR_REF`, по умолчанию `main`).
+- **Почему `keen-pbr` собирается из исходников?** В Debian-репозитории
+  upstream пока нет опубликованных пакетов. Релизный workflow триггерится
+  по pattern'у тега `v-*`, но реальные теги выглядят как `v2.2.1`, поэтому
+  workflow никогда не запускался. Когда это исправят, инсталлятор
+  автоматически подхватит бинарь, поставленный через apt.
+- **Подводный камень с bun bootstrap:** в upstream-овском
+  `build-frontend.sh` стоит `curl bun.sh/install | sh`. На Debian
+  `/bin/sh` — это `dash`, который ломается на `set -o pipefail` из
+  установщика bun. `install_keenpbr` предварительно ставит bun через
+  bash, так что upstream-овский `ensure_bun()` уходит в короткую ветку.
+- Переключаетесь между `amneziawg` и обычным `wireguard` для линка
+  RU→зарубежный? Просто замените `.conf` в `/etc/amnezia/amneziawg/`
+  (или в `/etc/wireguard/` для обычного WG), поднимите его и
+  переключите outbound keen-pbr на новый интерфейс. Повторный запуск
+  инсталлятора не нужен — инструменты для обоих уже стоят.
